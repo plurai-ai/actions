@@ -1,0 +1,122 @@
+name: 'Trigger Simulation'
+description: 'Trigger a simulation experiment via API'
+author: 'Plurai'
+
+inputs:
+  # API Access Parameters
+  host:
+    description: 'API host to trigger simulation'
+    required: true
+
+  apiKey:
+    description: 'API key for authentication'
+    required: false
+
+  # Simulation Experiment Parameters
+  scope:
+    description: 'Scope name of the simulation experiment'
+    required: true
+  name:
+    description: 'Name of the simulation experiment'
+    required: true
+  datasetId:
+    description: 'UUID of the dataset to use for simulation'
+    required: true
+  evalSetId:
+    description: 'UUID of the evaluation set (optional)'
+    required: false
+  environmentId:
+    description: 'UUID of the simulation environment'
+    required: true
+
+  # Agent Docker Container Parameters
+  dockerImage:
+    description: 'Agent docker image in REGISTRY/IMAGE:TAG format (e.g. ghcr.io/myorg/myimage:latest)'
+    required: true
+  dockerEntrypoint:
+    description: 'Agent docker container entrypoint command'
+    required: true
+  dockerEntrypointArgs:
+    description: 'Newline-separated arguments of agent docker container entrypoint command'
+    required: true
+  dockerEnvVars:
+    description: 'Environment variables of agent docker container as key=value, newline-separated'
+    required: true
+
+  # Agent API Parameters
+  agentPort:
+    description: 'Port number for the agent API'
+    required: true
+  agentName:
+    description: 'Name of the agent'
+    required: true
+
+  # Github Integration Parameters
+  githubToken:
+    description: 'GitHub token for integration (optional)'
+    required: false
+  commitSha:
+    description: 'Commit SHA for GitHub integration (optional)'
+    required: false
+  pullRequest:
+    description: 'Pull request number for GitHub integration (optional)'
+    required: false
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.13'
+
+    - name: Install dependencies
+      shell: bash
+      run: |
+        pip install -r ${{ github.action_path }}/scripts/build_trigger_payload/requirements.txt
+
+    - name: Build request payload
+      id: build-payload
+      shell: bash
+      run: |
+        PAYLOAD=$(python ${{ github.action_path }}/scripts/build_trigger_payload/main.py '${{ toJSON(inputs) }}')
+        echo "payload<<EOF" >> $GITHUB_OUTPUT
+        echo "$PAYLOAD" >> $GITHUB_OUTPUT
+        echo "EOF" >> $GITHUB_OUTPUT
+
+    - name: POST to API
+      shell: bash
+      run: |
+        URL="https://${{ inputs.host }}/api/experiments"
+        echo "Sending POST request to $URL ..."
+
+        STATUS_CODE=$(curl -s -w "%{http_code}" -o response.json \
+          -X POST \
+          -H "Content-Type: application/json" \
+          -H "Authorization: ApiKey ${{ inputs.apiKey }}" \
+          -d '${{ steps.build-payload.outputs.payload }}' "$URL")
+
+        if [ "$STATUS_CODE" -ge 200 ] && [ "$STATUS_CODE" -lt 300 ]; then
+          echo "Request succeeded with status $STATUS_CODE"
+        else
+          echo "Request failed with status $STATUS_CODE"
+          echo "Response body:"
+          cat response.json
+          exit 1
+        fi
+
+    - name: Create comment
+      if: github.event_name == 'pull_request'
+      uses: peter-evans/create-or-update-comment@v5
+      with:
+        issue-number: ${{ github.event.pull_request.number }}
+        body: |
+          Experiment submitted successfully!
+          [View Experiments](https://${{ inputs.host }}/experiments)
+
+          **Experiment Details:**
+          - **Name:** ${{ inputs.name }}
+          - **Scope:** ${{ inputs.scope }}
+          - **Dataset:** [Scam Scenario Dataset](https://${{ inputs.host }}/datasets/${{ inputs.datasetId }})
+          - **Environment:** [Development](https://${{ inputs.host }}/environments/${{ inputs.environmentId }})
+          - **Eval Set**: [v1.1](https://${{ inputs.host }}/custom-evals)
